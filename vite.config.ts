@@ -5,10 +5,26 @@ export default defineConfig({
     "*": "vp check --fix",
   },
   pack: {
+    entry: [
+      "src/index.ts",
+      "src/schema.ts",
+      "src/react.ts",
+      "src/server.ts",
+      "src/testing.ts",
+      "src/query-collection.ts",
+      "src/local-storage-collection.ts",
+      "src/sync-collection.ts",
+    ],
     dts: {
       tsgo: true,
     },
     exports: true,
+    deps: {
+      neverBundle: ["react-dom"],
+    },
+  },
+  test: {
+    environment: "jsdom",
   },
   lint: {
     options: {

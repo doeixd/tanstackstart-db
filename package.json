@@ -1,23 +1,43 @@
 {
   "name": "@doeixd/tanstackstart-db",
-  "version": "0.0.0",
-  "description": "A starter for creating a TypeScript package.",
-  "homepage": "https://github.com/author/library#readme",
+  "version": "0.0.1",
+  "description": "Typed schema, view, query, action, route, and hydration helpers for TanStack DB.",
+  "keywords": [
+    "crud",
+    "database",
+    "hydration",
+    "optimistic",
+    "react",
+    "schema",
+    "ssr",
+    "tanstack",
+    "tanstack-db",
+    "tanstack-start"
+  ],
+  "homepage": "https://github.com/doeixd/tanstackstart-db#readme",
   "bugs": {
-    "url": "https://github.com/author/library/issues"
+    "url": "https://github.com/doeixd/tanstackstart-db/issues"
   },
   "license": "MIT",
-  "author": "Author Name <author.name@mail.com>",
+  "author": "Patrick Glenn <doeixd@gmail.com>",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/author/library.git"
+    "url": "git+https://github.com/doeixd/tanstackstart-db.git"
   },
   "files": [
     "dist"
   ],
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": "./dist/index.mjs",
+    "./local-storage-collection": "./dist/local-storage-collection.mjs",
+    "./query-collection": "./dist/query-collection.mjs",
+    "./react": "./dist/react.mjs",
+    "./schema": "./dist/schema.mjs",
+    "./server": "./dist/server.mjs",
+    "./sync-collection": "./dist/sync-collection.mjs",
+    "./testing": "./dist/testing.mjs",
     "./package.json": "./package.json"
   },
   "publishConfig": {
@@ -31,12 +51,50 @@
     "prepublishOnly": "vp run build",
     "prepare": "vp config"
   },
+  "dependencies": {
+    "@tanstack/db": "^0.6.7"
+  },
   "devDependencies": {
+    "@tanstack/query-core": "^5.100.14",
+    "@tanstack/query-db-collection": "^1.0.38",
+    "@tanstack/react-router": "^1.170.10",
+    "@types/jsdom": "^28.0.3",
     "@types/node": "^25.6.2",
+    "@types/react": "^19.2.16",
+    "@types/react-dom": "^19.2.3",
     "@typescript/native-preview": "7.0.0-dev.20260509.2",
     "bumpp": "^11.1.0",
+    "jsdom": "^29.1.1",
+    "react-dom": "^19.2.7",
     "typescript": "^6.0.3",
     "vite-plus": "catalog:"
+  },
+  "peerDependencies": {
+    "@tanstack/query-core": "^5.100.14",
+    "@tanstack/query-db-collection": "^1.0.38",
+    "@tanstack/react-router": "^1.170.10",
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@tanstack/query-core": {
+      "optional": true
+    },
+    "@tanstack/query-db-collection": {
+      "optional": true
+    },
+    "@tanstack/react-router": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "packageManager": "pnpm@10.29.2"
 }
