@@ -15,6 +15,8 @@ export default defineConfig({
       "src/local-storage-collection.ts",
       "src/sync-collection.ts",
       "src/pagination.ts",
+      "src/live-client.ts",
+      "src/live-server.ts",
     ],
     dts: {
       tsgo: true,

@@ -579,6 +579,82 @@ The collection exposes all pagination primitives via `collection.utils`:
 - `getState()` - get the current pagination state snapshot
 - `getCollection()` - get the underlying collection instance
 
+## Live transport (SSE)
+
+`@doeixd/tanstackstart-db/live-client` and `@doeixd/tanstackstart-db/live-server`
+provide a complete client/server transport for streaming entity updates over
+Server-Sent Events. The client opens a single EventSource per app; the server
+multiplexes entity events across connections with a per-connection bounded
+queue, control messages for subscribe/unsubscribe, and per-record + per-field
+filtering.
+
+```ts
+// Server (e.g. a TanStack Start API route)
+import {
+  createLiveEventBus,
+  createLiveSseHandler,
+  createLiveControlHandler,
+} from "@doeixd/tanstackstart-db/live-server";
+
+const bus = createLiveEventBus();
+
+export const GET = createLiveSseHandler(bus);
+export const POST = createLiveControlHandler(bus);
+
+// Push a server-side event
+bus.update("Post", "1", { changed: ["likes"], value: { id: "1", likes: 99 } });
+```
+
+```tsx
+// Client
+import { createCollection } from "@tanstack/db";
+import {
+  createLiveClient,
+  liveCollectionOptions,
+  useLiveCollection,
+} from "@doeixd/tanstackstart-db/live-client";
+
+const live = createLiveClient({ url: "/api/live" });
+
+const posts = createCollection(
+  liveCollectionOptions<Post>({
+    id: "posts",
+    entity: "Post",
+    live,
+    initialFetch: () => fetch("/api/posts").then((r) => r.json()),
+  }),
+);
+
+function PostList() {
+  const list = useLiveCollection({ collection: posts, view: PostView });
+  return (
+    <ul>
+      {list.map((p) => (
+        <li key={p.id}>{p.title}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+Field-level subscription:
+
+```ts
+// Only receive "likes" changes for the Post entity
+live.subscribe(
+  "Post",
+  (event) => {
+    /* ... */
+  },
+  { fields: ["likes"] },
+);
+```
+
+The wire format is SSE `event: entity.create|update|delete|invalid` with JSON
+`data:` and an optional `id:` (used as `Last-Event-ID` for resumable streams).
+Control messages are POSTed to `${url}/control` (or `controlUrl` if provided)
+as JSON: `{ type: "subscribe"|"unsubscribe", connectionId, entity, id?, fields? }`.
+
 ## DB file routes
 
 The main application-level value of the React entrypoint is its DB file-route
@@ -800,6 +876,9 @@ expect(data.post.title).toBe("Hello");
 @doeixd/tanstackstart-db/react
 @doeixd/tanstackstart-db/server
 @doeixd/tanstackstart-db/testing
+@doeixd/tanstackstart-db/pagination
+@doeixd/tanstackstart-db/live-client
+@doeixd/tanstackstart-db/live-server
 @doeixd/tanstackstart-db/query-collection
 @doeixd/tanstackstart-db/local-storage-collection
 @doeixd/tanstackstart-db/sync-collection
