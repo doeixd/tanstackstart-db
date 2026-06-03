@@ -1,12 +1,15 @@
 {
   "name": "@doeixd/tanstackstart-db",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Typed schema, view, query, action, route, and hydration helpers for TanStack DB.",
   "keywords": [
     "crud",
+    "cursor",
     "database",
     "hydration",
+    "infinite-scroll",
     "optimistic",
+    "pagination",
     "react",
     "schema",
     "ssr",
@@ -32,6 +35,7 @@
   "exports": {
     ".": "./dist/index.mjs",
     "./local-storage-collection": "./dist/local-storage-collection.mjs",
+    "./pagination": "./dist/pagination.mjs",
     "./query-collection": "./dist/query-collection.mjs",
     "./react": "./dist/react.mjs",
     "./schema": "./dist/schema.mjs",

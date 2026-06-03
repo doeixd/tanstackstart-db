@@ -14,6 +14,7 @@ export default defineConfig({
       "src/query-collection.ts",
       "src/local-storage-collection.ts",
       "src/sync-collection.ts",
+      "src/pagination.ts",
     ],
     dts: {
       tsgo: true,

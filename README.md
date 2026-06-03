@@ -501,6 +501,84 @@ const PostTitle = createDbComponent(db)
   .render(({ post }) => <h2>{post.title}</h2>);
 ```
 
+## Pagination
+
+`@doeixd/tanstackstart-db/pagination` provides cursor-based pagination built on
+top of TanStack DB collections. Define a paginated collection once, then use
+`useListView` to load pages incrementally with automatic cursor tracking and
+reactive re-renders.
+
+```tsx
+import { createCollection } from "@tanstack/db";
+import { paginatedCollectionOptions, useListView } from "@doeixd/tanstackstart-db/pagination";
+
+const CommentView = db.view("comment", { id: true, body: true, createdAt: true });
+
+const comments = createCollection(
+  paginatedCollectionOptions({
+    id: "post-comments",
+    getKey: (c) => c.id,
+    pageSize: 10,
+    cursor: "id",
+    direction: "both",
+    fetchPage: async ({ after, before, limit }) => {
+      const params = new URLSearchParams();
+      if (after !== undefined) params.set("after", String(after));
+      if (before !== undefined) params.set("before", String(before));
+      params.set("limit", String(limit));
+      const response = await fetch(`/api/comments?${params}`);
+      return response.json();
+    },
+  }),
+);
+
+function PostComments() {
+  const [items, loadNext, loadPrevious, state] = useListView({
+    collection: comments,
+    view: CommentView,
+  });
+
+  return (
+    <div>
+      {loadPrevious && (
+        <button onClick={loadPrevious} disabled={state.isLoadingPrevious}>
+          Load older
+        </button>
+      )}
+      {items.map((comment) => (
+        <CommentCard key={comment.id} comment={comment} />
+      ))}
+      {loadNext && (
+        <button onClick={loadNext} disabled={state.isLoadingNext}>
+          Load newer
+        </button>
+      )}
+    </div>
+  );
+}
+```
+
+The `useListView` hook returns a tuple of `[items, loadNext, loadPrevious, state]`:
+
+- `items` - all currently loaded items projected through the view, reactively updated
+- `loadNext` - function to load the next page, or `undefined` if no more pages or a load is in flight
+- `loadPrevious` - function to load the previous page (only present for `direction: "backward"` or `"both"`), or `undefined` if at the start or a load is in flight
+- `state` - pagination state including `hasNextPage`, `hasPreviousPage`, `isLoadingNext`, `isLoadingPrevious`, `error`, `totalCount`, `loadedCount`
+
+Items are deduplicated by `getKey`, so calling `loadNextPage` twice with the
+same cursor is safe. Use `useRefetchPaginated(collection)` to get a stable
+refetch callback for refresh buttons (clears all loaded data and re-fetches
+the first page).
+
+The collection exposes all pagination primitives via `collection.utils`:
+
+- `loadNextPage()` - fetch the next page
+- `loadPreviousPage()` - fetch the previous page (undefined for forward-only)
+- `refetchFirstPage()` - clear all data and re-fetch the first page
+- `subscribe(callback)` - subscribe to pagination state changes
+- `getState()` - get the current pagination state snapshot
+- `getCollection()` - get the underlying collection instance
+
 ## DB file routes
 
 The main application-level value of the React entrypoint is its DB file-route
