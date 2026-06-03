@@ -291,6 +291,26 @@ export function entity<
 }
 
 /**
+ * Object-form alias of {@link entity}. Useful when larger schemas read better
+ * with named fields instead of a positional `entity(schema, options)` call.
+ */
+export function defineEntity<
+  const Schema extends StandardSchemaV1,
+  const Indexes extends ReadonlyArray<SchemaField<Schema>> = [],
+  const Relationships extends Record<string, DbRelationship> = Record<never, never>,
+>(
+  options: Omit<EntityOptions, "key" | "indexes" | "relationships"> & {
+    readonly schema: Schema;
+    readonly key: SchemaField<Schema>;
+    readonly indexes?: Indexes;
+    readonly relationships?: (helpers: RelationshipHelpers<SchemaField<Schema>>) => Relationships;
+  },
+): EntityDefinition<Schema, Indexes, Relationships> {
+  const { schema, ...entityOptions } = options;
+  return entity(schema, entityOptions);
+}
+
+/**
  * Combine a record of named entities into a {@link DbSchema}. Pass the result
  * to `createStartDbFromSchema(schema)` to construct a `StartDb`.
  *

@@ -4,6 +4,9 @@ export type {
   GeneratedEntityActions,
   GeneratedEntityQueries,
   PendingApi,
+  DbQueryBundle,
+  DbQueryBundleContext,
+  DbQueryBundleStage,
   QueryCollectionDefinition,
   QueryCollectionOptions,
   StartDb,
@@ -35,7 +38,7 @@ export type {
   Submission,
 } from "./action.ts";
 export { createOptimisticCache } from "./cache.ts";
-export type { OptimisticCache } from "./cache.ts";
+export type { EntityCache, OptimisticCache, SelectedEntityCache } from "./cache.ts";
 export {
   MemoryCollection,
   NativeCollection,

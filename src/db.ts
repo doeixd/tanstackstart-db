@@ -8,7 +8,12 @@ import {
 } from "./action.ts";
 import { localStorageCollection as defineLocalStorageCollection } from "./local-storage-collection.ts";
 import { syncCollection as defineSyncCollection } from "./sync-collection.ts";
-import { createDbComponent, type DbComponentBuilder } from "./react.ts";
+import {
+  createDbComponent,
+  createDbFileRouteFactory,
+  type DbComponentBuilder,
+  type DbRouteDefaults,
+} from "./react.ts";
 import {
   TanStackCollection,
   type DbCollection,
@@ -169,7 +174,10 @@ export type GeneratedEntityQueries<
   Schema extends DbSchema = DbSchema,
 > = {
   byId(id: EntityId): DbQuerySpec<EntityOutput<Entity> | undefined>;
+  get(id: EntityId): DbQuerySpec<EntityOutput<Entity> | undefined>;
+  require(id: EntityId): DbQuerySpec<NonNullable<EntityOutput<Entity>>>;
   all(): DbQuerySpec<ReadonlyArray<EntityOutput<Entity>>>;
+  list(): DbQuerySpec<ReadonlyArray<EntityOutput<Entity>>>;
 } & IndexedQueryHelpers<Entity> &
   RelationshipQueryHelpers<Schema, Entity>;
 
@@ -194,6 +202,58 @@ type GeneratedQueries<Schema extends DbSchema> = {
 } & {
   raw: QueryFactory["raw"];
 };
+
+type QuerySpecMap = Record<string, DbQuerySpec>;
+
+type QueryBundleData<Queries extends QuerySpecMap> = {
+  readonly [Name in keyof Queries]: Awaited<ReturnType<Queries[Name]["execute"]>>;
+};
+
+const queryBundleStagesKey = "__tanstackstartDbQueryBundleStages";
+
+export type DbQueryBundleContext<
+  Q = unknown,
+  Data extends Record<string, unknown> = Record<string, never>,
+> = {
+  readonly q: Q;
+  readonly data: Data;
+  readonly params: Record<string, string>;
+  readonly context?: unknown;
+};
+
+export type DbQueryBundleStage = (context: DbQueryBundleContext) => QuerySpecMap;
+
+/**
+ * A reusable bundle of named query specs. Bundles are callable so they can be
+ * passed directly to route `.queries(...)` / `.views(...)`, and they also expose
+ * `.execute()` / `.preload()` for scripts, tests, and non-route code.
+ *
+ * A bundle does not introduce a new cache layer. It is just a stable named set
+ * of {@link DbQuerySpec}s.
+ */
+export interface DbQueryBundle<Queries extends QuerySpecMap = QuerySpecMap, Q = unknown> {
+  (context?: Partial<DbQueryBundleContext>): Queries;
+  readonly [queryBundleStagesKey]?: ReadonlyArray<DbQueryBundleStage>;
+  readonly queries: Queries;
+  keys(options?: { readonly params?: Record<string, string>; readonly context?: unknown }): {
+    readonly [Name in keyof Queries]: ReturnType<Queries[Name]["key"]>;
+  };
+  execute(options?: {
+    readonly params?: Record<string, string>;
+    readonly context?: unknown;
+  }): Promise<QueryBundleData<Queries>>;
+  preload(options?: {
+    readonly params?: Record<string, string>;
+    readonly context?: unknown;
+  }): Promise<void>;
+  extend<NextQueries extends QuerySpecMap>(
+    factory: (context: DbQueryBundleContext<Q, QueryBundleData<Queries>>) => NextQueries,
+  ): DbQueryBundle<Queries & NextQueries, Q>;
+  route(
+    path: string,
+    options?: DbRouteDefaults,
+  ): ReturnType<ReturnType<typeof createDbFileRouteFactory>>;
+}
 
 /** Internal: map every entity in `Schema` to its {@link DbCollection}. */
 type SchemaCollections<Schema extends DbSchema> = {
@@ -312,6 +372,33 @@ export interface StartDb<
     Name
   >;
   viewFragment: typeof defineViewFragment;
+  entity<Name extends EntityName<Schema>>(
+    entityName: Name,
+  ): {
+    view<
+      const Selection extends ViewSelection<
+        EntityRecord<Schema["entities"][Name]>,
+        Schema["entities"][Name]["relationships"]
+      >,
+    >(
+      selection: Selection,
+    ): DbView<
+      EntityRecord<Schema["entities"][Name]>,
+      SelectionResult<
+        EntityRecord<Schema["entities"][Name]>,
+        Selection,
+        Schema["entities"][Name]["relationships"]
+      >,
+      Name
+    >;
+    pick<const Fields extends ReadonlyArray<keyof EntityRecord<Schema["entities"][Name]> & string>>(
+      ...fields: Fields
+    ): DbView<
+      EntityRecord<Schema["entities"][Name]>,
+      Pick<EntityRecord<Schema["entities"][Name]>, Fields[number]>,
+      Name
+    >;
+  };
   /**
    * Build a render-bound component for a {@link DbView}. Mirrors the
    * {@link createDbComponent} view-bound overload but reads the DB
@@ -329,6 +416,28 @@ export interface StartDb<
    * ```
    */
   component<View extends DbView>(view: View): DbComponentBuilder<View>;
+  /**
+   * Build a reusable bundle of named query specs. The returned bundle can be
+   * executed directly or passed to a route builder:
+   *
+   * @example
+   * ```ts
+   * const postPage = db.request(({ q }) => ({
+   *   post: q.post.byId("post_1").required(),
+   *   comments: q.comment.byPost("post_1"),
+   * }));
+   *
+   * const data = await postPage.execute();
+   * createDbFileRoute("/posts/$postId").views(postPage);
+   * ```
+   */
+  request<Queries extends QuerySpecMap>(
+    factory: (context: DbQueryBundleContext<GeneratedQueries<Schema>>) => Queries,
+  ): DbQueryBundle<Queries, GeneratedQueries<Schema>>;
+  action<Input, Result>(
+    name: string,
+    definition: ActionDefinition<Input, Result>,
+  ): DbAction<Input, Result>;
   /**
    * Build a new {@link StartDb} with extra action namespaces merged
    * into `a`. The factory receives the current `a`, an `action(definition)`
@@ -408,6 +517,97 @@ function createSubmissionsApi(tracker: ActionTracker): SubmissionsApi {
         inputMatches(submission.input, input),
       ),
   };
+}
+
+function createQueryBundle<Queries extends QuerySpecMap, Q>(
+  q: Q,
+  stages: ReadonlyArray<DbQueryBundleStage>,
+  routeFactory: ReturnType<typeof createDbFileRouteFactory>,
+): DbQueryBundle<Queries, Q> {
+  const buildContext = (
+    options: Partial<DbQueryBundleContext> = {},
+    data: Record<string, unknown> = {},
+  ): DbQueryBundleContext => ({
+    q,
+    data: data as never,
+    params: options.params ?? {},
+    context: options.context,
+  });
+  const build = (options: Partial<DbQueryBundleContext> = {}): Queries => {
+    if (stages.length > 1) {
+      throw new Error(
+        "Staged query bundles cannot be inspected synchronously. Use execute(), preload(), or pass the bundle to a route builder.",
+      );
+    }
+    const data: Record<string, unknown> = {};
+    for (const stage of stages) {
+      const queries = stage(buildContext(options, data));
+      Object.assign(data, queries);
+    }
+    return data as unknown as Queries;
+  };
+  const executeStages = async (
+    options: { readonly params?: Record<string, string>; readonly context?: unknown } = {},
+  ): Promise<QueryBundleData<Queries>> => {
+    const data: Record<string, unknown> = {};
+    for (const stage of stages) {
+      const queries = stage(buildContext(options, data));
+      const entries = await Promise.all(
+        Object.entries(queries).map(async ([name, query]) => [name, await query.execute()]),
+      );
+      Object.assign(data, Object.fromEntries(entries));
+    }
+    return data as QueryBundleData<Queries>;
+  };
+  const bundle = ((context?: Partial<DbQueryBundleContext>) => {
+    if (context && "q" in context) {
+      return stages.at(-1)?.(context as DbQueryBundleContext) ?? {};
+    }
+    return build(context);
+  }) as DbQueryBundle<Queries, Q>;
+  Object.defineProperties(bundle, {
+    [queryBundleStagesKey]: { value: stages },
+    queries: { get: () => build(), enumerable: true },
+    keys: {
+      value: (
+        options: { readonly params?: Record<string, string>; readonly context?: unknown } = {},
+      ) => {
+        const queries = build(options);
+        return Object.fromEntries(
+          Object.entries(queries).map(([name, query]) => [name, query.key()]),
+        ) as {
+          readonly [Name in keyof Queries]: ReturnType<Queries[Name]["key"]>;
+        };
+      },
+    },
+    execute: {
+      value: executeStages,
+    },
+    preload: {
+      value: async (
+        options: { readonly params?: Record<string, string>; readonly context?: unknown } = {},
+      ) => {
+        await executeStages(options);
+      },
+    },
+    extend: {
+      value: <NextQueries extends QuerySpecMap>(
+        factory: (context: DbQueryBundleContext<Q, QueryBundleData<Queries>>) => NextQueries,
+      ) =>
+        createQueryBundle<Queries & NextQueries, Q>(
+          q,
+          [...stages, factory as unknown as DbQueryBundleStage],
+          routeFactory,
+        ),
+    },
+    route: {
+      value: (path: string, options?: DbRouteDefaults) => {
+        const route = routeFactory(path).views(bundle);
+        return options ? route.options(options) : route;
+      },
+    },
+  });
+  return bundle;
 }
 
 function mergeActionNamespaces(
@@ -557,68 +757,73 @@ function buildGeneratedQueries<Schema extends DbSchema>(
       return next;
     };
 
-    const queries: Record<string, unknown> = {
-      byId: (id: EntityId) => {
-        if (useNative && sourceCollection) {
-          const viewBuild: QueryBuild = (view) => {
-            return compileQueryFn(sourceCollection, (q) => {
-              const base = q
-                .from({ [alias]: sourceCollection })
-                .where(({ [alias]: row }: Record<string, unknown>) =>
-                  eq((row as Record<string, unknown>)[definition.key], id),
-                );
-              return (
-                applyViewChain(base, view) as {
-                  findOne: () => unknown;
-                }
-              ).findOne();
-            });
-          };
-          return new DbQuerySpec(
-            { key: [entityName, "byId", id], scope: sourceCollection },
-            { cardinality: "optional" },
-            {
-              queryBuilder: viewBuild(),
-              viewBuild,
-              resolveView,
-              subscribeView,
-              liveQueryTracker: tracker.liveQueries,
-            },
-          );
-        }
-        return new DbQuerySpec({
-          key: [entityName, "byId", id],
-          execute: () => collection.get(id),
-        });
-      },
-      all: () => {
-        if (useNative && sourceCollection) {
-          const viewBuild: QueryBuild = (view) => {
-            return compileQueryFn(sourceCollection, (q) => {
-              const base = q.from({ [alias]: sourceCollection });
-              return applyViewChain(base, view);
-            });
-          };
-          return new DbQuerySpec(
-            { key: [entityName, "all"], scope: sourceCollection },
-            { cardinality: "many" },
-            {
-              queryBuilder: viewBuild(),
-              viewBuild,
-              resolveView,
-              subscribeView,
-              liveQueryTracker: tracker.liveQueries,
-            },
-          );
-        }
+    const byId = (id: EntityId) => {
+      if (useNative && sourceCollection) {
+        const viewBuild: QueryBuild = (view) => {
+          return compileQueryFn(sourceCollection, (q) => {
+            const base = q
+              .from({ [alias]: sourceCollection })
+              .where(({ [alias]: row }: Record<string, unknown>) =>
+                eq((row as Record<string, unknown>)[definition.key], id),
+              );
+            return (
+              applyViewChain(base, view) as {
+                findOne: () => unknown;
+              }
+            ).findOne();
+          });
+        };
         return new DbQuerySpec(
+          { key: [entityName, "byId", id], scope: sourceCollection },
+          { cardinality: "optional" },
           {
-            key: [entityName, "all"],
-            execute: () => collection.values(),
+            queryBuilder: viewBuild(),
+            viewBuild,
+            resolveView,
+            subscribeView,
+            liveQueryTracker: tracker.liveQueries,
           },
-          { cardinality: "many" },
         );
-      },
+      }
+      return new DbQuerySpec({
+        key: [entityName, "byId", id],
+        execute: () => collection.get(id),
+      });
+    };
+    const all = () => {
+      if (useNative && sourceCollection) {
+        const viewBuild: QueryBuild = (view) => {
+          return compileQueryFn(sourceCollection, (q) => {
+            const base = q.from({ [alias]: sourceCollection });
+            return applyViewChain(base, view);
+          });
+        };
+        return new DbQuerySpec(
+          { key: [entityName, "all"], scope: sourceCollection },
+          { cardinality: "many" },
+          {
+            queryBuilder: viewBuild(),
+            viewBuild,
+            resolveView,
+            subscribeView,
+            liveQueryTracker: tracker.liveQueries,
+          },
+        );
+      }
+      return new DbQuerySpec(
+        {
+          key: [entityName, "all"],
+          execute: () => collection.values(),
+        },
+        { cardinality: "many" },
+      );
+    };
+    const queries: Record<string, unknown> = {
+      byId,
+      get: byId,
+      require: (id: EntityId) => byId(id).required(),
+      all,
+      list: all,
     };
 
     for (const indexName of definition.indexes) {
@@ -1049,8 +1254,30 @@ export function createStartDbFromSchema<Schema extends DbSchema>(
     submissions: createSubmissionsApi(tracker),
     view: (entityName, selection) => defineView(schema, entityName, selection) as never,
     viewFragment: defineViewFragment,
+    entity: (entityName) => ({
+      view: (selection) => defineView(schema, entityName, selection) as never,
+      pick: (...fields) =>
+        defineView(
+          schema,
+          entityName,
+          Object.fromEntries(fields.map((field) => [field, true])) as never,
+        ) as never,
+    }),
     component: <View extends DbView>(view: View): DbComponentBuilder<View> =>
       createDbComponent(view) as DbComponentBuilder<View>,
+    request: (factory) =>
+      createQueryBundle(
+        q,
+        [factory as unknown as DbQueryBundleStage],
+        createDbFileRouteFactory({ db }),
+      ),
+    action: (name, definition) =>
+      createAction(definition, {
+        collections: collections as DbCollections,
+        tracker,
+        name,
+        q,
+      }),
     extendActions: (factory) => {
       const extended = factory({
         a: db.a,

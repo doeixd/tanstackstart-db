@@ -727,11 +727,12 @@ expect(data.post.title).toBe("Hello");
 @doeixd/tanstackstart-db/sync-collection
 ```
 
-Optional peer dependencies are only needed for the entrypoints you use:
+Peer dependency requirements by entrypoint:
 
 - `@tanstack/query-core` and `@tanstack/query-db-collection` for
   `query-collection`
-- `@tanstack/react-router` and `react` for `react`
+- `react` and `@tanstack/react-router` for the root package and `react`
+- `react-dom` for `testing`
 
 ## Development
 

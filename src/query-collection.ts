@@ -47,6 +47,21 @@ export type QueryDbCollectionOptions<Value extends Record<string, unknown>> = Om
   readonly mutations?: QueryCollectionMutations<Value>;
 };
 
+export type QueryCollectionApiOptions<Value extends Record<string, unknown>> = Omit<
+  QueryDbCollectionOptions<Value>,
+  "queryFn" | "mutations"
+> & {
+  readonly list: QueryFn<Value>;
+  readonly create?: (values: ReadonlyArray<Value>) => unknown;
+  readonly update?: (
+    values: ReadonlyArray<{
+      readonly id: EntityId;
+      readonly changes: Partial<Value>;
+    }>,
+  ) => unknown;
+  readonly delete?: (ids: ReadonlyArray<EntityId>) => unknown;
+};
+
 function confirmedValues<Value extends Record<string, unknown>>(
   engine: Collection<Value, EntityId>,
 ): ReadonlyArray<Value> {
@@ -160,6 +175,27 @@ export function queryCollection<Value extends Record<string, unknown>>(
           };
         },
       });
+    },
+  });
+}
+
+/**
+ * Convenience wrapper for the common API-backed Query Collection shape.
+ * `list` becomes the Query Collection `queryFn`, while `create` / `update` /
+ * `delete` are mapped to generated CRUD mutation hooks.
+ */
+export function queryCollectionFromApi<Value extends Record<string, unknown>>(
+  entityName: string,
+  options: QueryCollectionApiOptions<Value>,
+): QueryCollectionDefinition<Value> {
+  const { list, create, update, delete: deleteValues, ...rest } = options;
+  return queryCollection(entityName, {
+    ...rest,
+    queryFn: list,
+    mutations: {
+      insert: create,
+      update,
+      delete: deleteValues,
     },
   });
 }

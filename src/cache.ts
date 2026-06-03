@@ -31,14 +31,20 @@ export interface EntityCache<Value extends Record<string, unknown>> {
   insert(value: Value): Value;
   insertIntoList(_query: unknown, value: Value): Value;
   patch(id: EntityId, patch: Patch<Value>): Value;
+  merge(id: EntityId, patch: Patch<Value>): Value;
+  increment(id: EntityId, field: keyof Value, by?: number): Value;
   delete(id: EntityId): Value | undefined;
+  remove(id: EntityId): Value | undefined;
 }
 
 /** Entity cache bound to a specific row id. Returned by
  * `cache.user("u1")`. */
 export interface SelectedEntityCache<Value extends Record<string, unknown>> {
   patch(patch: Patch<Value>): Value;
+  merge(patch: Patch<Value>): Value;
+  increment(field: keyof Value, by?: number): Value;
   delete(): Value | undefined;
+  remove(): Value | undefined;
 }
 
 /**
@@ -111,6 +117,16 @@ function createEntityCache(
       recordUndo(() => collection.update(id, () => previous));
       return next;
     },
+    increment: (id: EntityId, field: string, by = 1) =>
+      methods.patch(id, {
+        [field]: (current: unknown) => {
+          const number = current == null ? 0 : Number(current);
+          if (!Number.isFinite(number)) {
+            throw new Error(`Cannot increment non-numeric field "${field}".`);
+          }
+          return number + by;
+        },
+      }),
     delete: (id: EntityId) => {
       const previous = collection.delete(id).value;
       if (previous) {
@@ -122,9 +138,16 @@ function createEntityCache(
   return Object.assign(
     (id: EntityId): SelectedEntityCache<Record<string, unknown>> => ({
       patch: (patch) => methods.patch(id, patch),
+      merge: (patch) => methods.patch(id, patch),
+      increment: (field, by) => methods.increment(id, String(field), by),
       delete: () => methods.delete(id),
+      remove: () => methods.delete(id),
     }),
-    methods,
+    {
+      ...methods,
+      merge: methods.patch,
+      remove: methods.delete,
+    },
   );
 }
 

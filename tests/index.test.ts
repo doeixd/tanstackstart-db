@@ -42,9 +42,13 @@ import {
   useDbPending,
   useDbStatus,
   useDbSubmissions,
+  useDbAction,
 } from "../src/react.ts";
-import { defineDbSchema, entity, many, passthrough } from "../src/schema.ts";
-import { queryCollection as queryDbCollection } from "../src/query-collection.ts";
+import { defineDbSchema, defineEntity, entity, many, passthrough } from "../src/schema.ts";
+import {
+  queryCollection as queryDbCollection,
+  queryCollectionFromApi,
+} from "../src/query-collection.ts";
 import { syncCollection } from "../src/sync-collection.ts";
 import {
   createMemoryStartDb,
@@ -92,6 +96,94 @@ test("creates schema-generated CRUD actions and queries", async () => {
 
   await db.a.post.patch({ id: "post_1", changes: { likes: 1 } });
   expect((await db.q.post.byId("post_1").execute())?.likes).toBe(1);
+});
+
+test("executes reusable DB query bundles", async () => {
+  const db = createStartDbFromSchema(appSchema);
+  await db.a.post.create({ id: "post_1", title: "Hello", likes: 0, secret: "x" });
+  const postCard = db.view("post", { id: true, title: true });
+
+  const postPage = db.request(({ q }) => ({
+    post: q.post.byId("post_1").as(postCard).required(),
+    posts: q.post.all().as(postCard),
+  }));
+
+  expect(postPage.keys()).toEqual({
+    post: ["post", "byId", "post_1"],
+    posts: ["post", "all"],
+  });
+  await postPage.preload();
+  await expect(postPage.execute()).resolves.toEqual({
+    post: { id: "post_1", title: "Hello" },
+    posts: [{ id: "post_1", title: "Hello" }],
+  });
+});
+
+test("passes reusable DB query bundles to route views", async () => {
+  const db = createStartDbFromSchema(appSchema);
+  await db.a.post.create({ id: "post_1", title: "Hello", likes: 0, secret: "x" });
+  const postCard = db.view("post", { id: true, title: true });
+  const createDbFileRoute = createDbFileRouteFactory({ db });
+  const postPage = db.request(({ q }) => ({
+    post: q.post.byId("post_1").as(postCard).required(),
+  }));
+
+  const route = createDbFileRoute("/posts/$postId").views(postPage);
+
+  await expect(route.load({ params: { postId: "post_1" } })).resolves.toEqual({
+    post: { id: "post_1", title: "Hello" },
+  });
+});
+
+test("runs staged DB query bundles with params and earlier data", async () => {
+  const db = createStartDbFromSchema(appSchema);
+  await db.a.post.create({ id: "post_1", title: "Hello", likes: 0, secret: "x" });
+  await db.a.post.create({ id: "post_2", title: "Other", likes: 1, secret: "y" });
+  const postCard = db.entity("post").pick("id", "title");
+  const postPage = db
+    .request(({ params, q }) => ({
+      post: q.post.require(params.postId).as(postCard),
+    }))
+    .extend(({ data, q }) => ({
+      samePost: q.post.require(data.post.id).as(postCard),
+    }));
+
+  await expect(postPage.execute({ params: { postId: "post_1" } })).resolves.toEqual({
+    post: { id: "post_1", title: "Hello" },
+    samePost: { id: "post_1", title: "Hello" },
+  });
+  expect(() => postPage.keys({ params: { postId: "post_1" } })).toThrow(
+    "Staged query bundles cannot be inspected synchronously",
+  );
+
+  const route = postPage.route("/posts/$postId");
+  await expect(route.load({ params: { postId: "post_2" } })).resolves.toEqual({
+    post: { id: "post_2", title: "Other" },
+    samePost: { id: "post_2", title: "Other" },
+  });
+});
+
+test("exposes ergonomic query aliases, entity views, and standalone actions", async () => {
+  const db = createStartDbFromSchema(appSchema);
+  await db.a.post.create({ id: "post_1", title: "Hello", likes: 0, secret: "x" });
+  const postTitle = db.entity("post").view({ id: true, title: true });
+  const bump = db.action<{ id: string }, number>("post.bump", {
+    optimistic: ({ input, cache }) => {
+      cache.post(input.id).increment("likes");
+    },
+    run: ({ input }) => {
+      return Number(db.collections.post.get(input.id)?.likes ?? 0);
+    },
+  });
+
+  expect(await db.q.post.get("post_1").as(postTitle).execute()).toEqual({
+    id: "post_1",
+    title: "Hello",
+  });
+  expect(await db.q.post.require("post_1").execute()).toMatchObject({ id: "post_1" });
+  expect(await db.q.post.list().execute()).toHaveLength(1);
+  await bump({ id: "post_1" });
+  expect((await db.q.post.require("post_1").execute()).likes).toBe(1);
 });
 
 test("returns observable action submissions with native CRUD transactions", async () => {
@@ -360,6 +452,22 @@ test("rejects invalid schema input", async () => {
   expect(db.collections.post.values()).toEqual([]);
 });
 
+test("defineEntity supports object-form entity declarations", async () => {
+  const schema = defineDbSchema({
+    entities: {
+      post: defineEntity({
+        schema: passthroughSchema<{ id: string; title: string }>(),
+        key: "id",
+      }),
+    },
+  });
+  const db = createStartDbFromSchema(schema);
+
+  await db.a.post.create({ id: "post_1", title: "Hello" });
+
+  expect(await db.q.post.require("post_1").execute()).toEqual({ id: "post_1", title: "Hello" });
+});
+
 test("passes entity schemas through to generated TanStack collections", async () => {
   const schema = defineDbSchema({
     entities: {
@@ -572,6 +680,30 @@ test("creates official Query Collection adapters through the optional entrypoint
 
   expect(insertCalls).toBe(1);
   expect(await db.q.post.byId("post_2").execute()).toMatchObject({ title: "Local" });
+});
+
+test("creates Query Collection adapters from API presets", async () => {
+  const posts = [{ id: "post_1", title: "Remote", likes: 0, secret: "x" }];
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const updates: Array<{
+    readonly id: string | number;
+    readonly changes: Partial<(typeof posts)[number]>;
+  }> = [];
+  const db = createStartDbFromSchema(appSchema, {
+    collections: () => ({
+      post: queryCollectionFromApi("post", {
+        queryClient,
+        queryKey: ["posts"],
+        list: async () => posts,
+        update: (values) => updates.push(...values),
+      }),
+    }),
+  });
+
+  await db.collections.post.engine?.preload();
+  await db.a.post.patch({ id: "post_1", changes: { title: "Updated" } });
+
+  expect(updates).toEqual([{ id: "post_1", changes: { title: "Updated" } }]);
 });
 
 test("dehydrates and hydrates official Query Collection adapters", async () => {
@@ -3480,6 +3612,44 @@ test("stripVirtualProps drops __proto__/constructor/prototype keys from inserts"
   expect(values[0]).not.toHaveProperty("prototype");
   expect(values[0]).toEqual({ id: "post_1", title: "Hello", likes: 0, secret: "x" });
   expect(({} as { polluted?: string }).polluted).toBeUndefined();
+});
+
+test("useDbAction tracks latest submission, pending state, and errors", async () => {
+  const db = createStartDbFromSchema(appSchema);
+  await db.a.post.create({ id: "post_1", title: "Hello", likes: 0, secret: "x" });
+  let observed: { pending: boolean; error: unknown; latest: unknown } | undefined;
+  function Button() {
+    const like = useDbAction(db.a.post.patch);
+    observed = { pending: like.pending, error: like.error, latest: like.latest };
+    return createElement(
+      "button",
+      {
+        onClick: () =>
+          like.run({
+            id: "post_1",
+            changes: { likes: 1 },
+          }),
+      },
+      String(like.pending),
+    );
+  }
+
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(createElement(Button));
+  });
+  expect(observed).toMatchObject({ pending: false, error: undefined, latest: undefined });
+
+  await act(async () => {
+    container.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushMicrotasks(3);
+  });
+
+  expect(observed?.pending).toBe(false);
+  expect(isDbActionSubmission(observed?.latest)).toBe(true);
+  expect((await db.q.post.require("post_1").execute()).likes).toBe(1);
+  root.unmount();
 });
 
 test("replaceDraft drops __proto__/constructor/prototype keys from update payloads", async () => {

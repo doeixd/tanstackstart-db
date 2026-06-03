@@ -5,9 +5,11 @@ import {
   useContext,
   useEffect,
   useRef,
+  useState,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
+import type { DbAction } from "./action.ts";
 import type { PendingApi, StartDb, SubmissionsApi } from "./db.ts";
 import { dehydrateDb, hydrateDb, type DbSnapshot, type DbSnapshotMode } from "./hydrate.ts";
 import {
@@ -35,6 +37,7 @@ export interface DbRouteQueryContext<
 }
 
 const dbRouteFragmentStages = Symbol("tanstackstart-db.route-fragment-stages");
+const queryBundleStagesKey = "__tanstackstartDbQueryBundleStages";
 
 type DbRouteFragmentStage<Db extends AnyStartDb = AnyStartDb> = (
   context: DbRouteQueryContext<Db, Record<string, unknown>>,
@@ -1303,6 +1306,12 @@ function getRouteFragmentStages<
   factory: DbRouteFragment<Db, InputData, Queries> | undefined,
 ): ReadonlyArray<DbRouteFragmentStage<Db>> {
   if (!factory) return [];
+  const queryBundleStages = (
+    factory as unknown as {
+      readonly [queryBundleStagesKey]?: ReadonlyArray<DbRouteFragmentStage<Db>>;
+    }
+  )[queryBundleStagesKey];
+  if (queryBundleStages) return queryBundleStages;
   return factory[dbRouteFragmentStages] ?? [factory as unknown as DbRouteFragmentStage<Db>];
 }
 
@@ -1452,10 +1461,65 @@ export function useDb<Db extends AnyStartDb = AnyStartDb>(db?: Db): Db {
  */
 export const useDbCollections = <Db extends AnyStartDb = AnyStartDb>(db?: Db) =>
   useDb(db).collections;
-/** Identity helper for an action in a component. Exists for
- * readability in JSX (`useDbAction(likePost)` reads more clearly than
- * `likePost`). */
-export const useDbAction = <Action>(action: Action) => action;
+export interface DbActionRunner<Input, Result> {
+  readonly pending: boolean;
+  readonly latest: ReturnType<DbAction<Input, Result>> | undefined;
+  readonly error: unknown;
+  run(input: Input): ReturnType<DbAction<Input, Result>>;
+}
+
+/**
+ * Wrap a {@link DbAction} for component use. The underlying action still
+ * returns its normal submission immediately; the hook just tracks the latest
+ * submission, pending state, and error for this component.
+ */
+export function useDbAction<Input, Result>(
+  action: DbAction<Input, Result>,
+): DbActionRunner<Input, Result> {
+  const [latest, setLatest] = useState<ReturnType<DbAction<Input, Result>> | undefined>();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<unknown>();
+  const mountedRef = useRef(true);
+  const runIdRef = useRef(0);
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
+  return {
+    pending,
+    latest,
+    error,
+    run: (input: Input) => {
+      const runId = runIdRef.current + 1;
+      runIdRef.current = runId;
+      let submission: ReturnType<DbAction<Input, Result>>;
+      try {
+        submission = action(input) as ReturnType<DbAction<Input, Result>>;
+      } catch (nextError) {
+        setError(nextError);
+        setPending(false);
+        throw nextError;
+      }
+      setLatest(submission);
+      setPending(true);
+      setError(undefined);
+      void (submission as unknown as Promise<Result>).then(
+        () => {
+          if (!mountedRef.current || runIdRef.current !== runId) return;
+          setPending(false);
+        },
+        (nextError: unknown) => {
+          if (!mountedRef.current || runIdRef.current !== runId) return;
+          setError(nextError);
+          setPending(false);
+        },
+      );
+      return submission;
+    },
+  };
+}
 /**
  * Read the {@link PendingApi} from the current {@link StartDb}.
  *

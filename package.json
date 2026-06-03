@@ -1,6 +1,6 @@
 {
   "name": "@doeixd/tanstackstart-db",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Typed schema, view, query, action, route, and hydration helpers for TanStack DB.",
   "keywords": [
     "crud",
@@ -52,7 +52,8 @@
     "prepare": "vp config"
   },
   "dependencies": {
-    "@tanstack/db": "^0.6.7"
+    "@tanstack/db": "^0.6.7",
+    "@types/react": "^19.2.16"
   },
   "devDependencies": {
     "@tanstack/query-core": "^5.100.14",
@@ -60,7 +61,6 @@
     "@tanstack/react-router": "^1.170.10",
     "@types/jsdom": "^28.0.3",
     "@types/node": "^25.6.2",
-    "@types/react": "^19.2.16",
     "@types/react-dom": "^19.2.3",
     "@typescript/native-preview": "7.0.0-dev.20260509.2",
     "bumpp": "^11.1.0",
@@ -81,12 +81,6 @@
       "optional": true
     },
     "@tanstack/query-db-collection": {
-      "optional": true
-    },
-    "@tanstack/react-router": {
-      "optional": true
-    },
-    "react": {
       "optional": true
     },
     "react-dom": {
